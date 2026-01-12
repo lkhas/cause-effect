@@ -12,9 +12,9 @@ app = FastAPI(title="Cause–Effect Extraction API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # OK for now; restrict later
-    allow_credentials=True,
-    allow_methods=["*"],  # MUST include OPTIONS
+    allow_origin_regex=r"https://.*\.usercontent\.goog",
+    allow_credentials=False,   # IMPORTANT
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
