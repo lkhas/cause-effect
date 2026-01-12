@@ -9,14 +9,12 @@ nlp = spacy.load("en_core_web_sm")
 app = FastAPI(title="Cause–Effect Extraction API")
 
 # ✅ CORS
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000"
-    ],
+    allow_origins=["*"],  # OK for now; restrict later
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"],  # MUST include OPTIONS
     allow_headers=["*"],
 )
 
