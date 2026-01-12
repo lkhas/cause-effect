@@ -4,29 +4,28 @@ from pydantic import BaseModel
 import spacy
 import re
 
-nlp = spacy.load("en_core_web_sm")
+# ---------- APP ----------
+app = FastAPI()
 
-app = FastAPI(title="Cause–Effect Extraction API")
-
-# ✅ CORS
-
+# ---------- CORS (MUST BE HERE) ----------
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://.*\.usercontent\.goog",
-    allow_credentials=False,   # IMPORTANT
+    allow_origin_regex=r"https://.*\.run\.app",
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---------- NLP ----------
+nlp = spacy.load("en_core_web_sm")
+
 class TextInput(BaseModel):
     text: str
 
-
+# ---------- UTILS ----------
 def clean_line(line):
     line = line.replace('"', '').strip()
     line = re.sub(r"^\s*\d+\.\s*", "", line)
     return line
-
 
 def extract_cause_effect(sentence):
     doc = nlp(sentence)
@@ -36,18 +35,18 @@ def extract_cause_effect(sentence):
     root = next((t for t in doc if t.dep_ == "ROOT"), None)
 
     if root:
-        for child in root.children:
-            if child.dep_ in ("nsubj", "nsubjpass"):
-                cause = " ".join(w.text for w in child.subtree)
+        for c in root.children:
+            if c.dep_ in ("nsubj", "nsubjpass"):
+                cause = " ".join(w.text for w in c.subtree)
                 break
 
     if cause is None and root:
         cause = " ".join(t.text for t in doc if t.i < root.i).strip()
 
     if root:
-        for child in root.children:
-            if child.dep_ in ("dobj", "attr", "oprd"):
-                effect = " ".join(w.text for w in child.subtree)
+        for c in root.children:
+            if c.dep_ in ("dobj", "attr", "oprd"):
+                effect = " ".join(w.text for w in c.subtree)
                 break
 
     if effect is None:
@@ -58,12 +57,12 @@ def extract_cause_effect(sentence):
 
     return cause, effect
 
-
-@app.post("/extract")
-def extract(text_input: TextInput):
+# ---------- ENDPOINT ----------
+@app.post("/extract-dual")
+def extract_dual(data: TextInput):
     results = []
 
-    for line in text_input.text.split("\n"):
+    for line in data.text.split("\n"):
         if not line.strip():
             continue
 
@@ -72,10 +71,7 @@ def extract(text_input: TextInput):
         if len(parts) < 3:
             continue
 
-        sentence = parts[0]
-        sdg = parts[1]
-        impact_text = parts[2]
-
+        sentence, sdg, impact_text = parts[:3]
         cause, effect = extract_cause_effect(sentence)
 
         polarity = (
@@ -96,3 +92,8 @@ def extract(text_input: TextInput):
         })
 
     return {"results": results}
+
+# ---------- HEALTH CHECK ----------
+@app.get("/health")
+def health():
+    return {"status": "ok"}
