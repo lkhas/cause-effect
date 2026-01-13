@@ -90,13 +90,13 @@ def process_text_block(text: str, prefix: str) -> List[dict]:
 
         sentence, sdg, impact_text = parts[:3]
         cause, effect = extract_cause_effect(sentence)
-
+        
         polarity = (
-            "positive" if "positive" in impact_text
-            else "negative" if "negative" in impact_text
+            "positive" if "positive" in impact_text.lower()
+            else "negative" if "negative" in impact_text.lower()
             else "More info needed"
         )
-
+        
         directness = "Direct" if "Direct" in impact_text else "Indirect"
 
         results.append({
