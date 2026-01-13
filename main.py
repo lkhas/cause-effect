@@ -8,7 +8,7 @@ import re
 # ======================================================
 # APP
 # ======================================================
-app = FastAPI(title="IF–IA–SDG Graph Extraction API")
+app = FastAPI(title="Researcher–Database Causal Mapping API")
 
 # ======================================================
 # CORS (Cloud Run + Google AI Studio)
@@ -21,7 +21,7 @@ app.add_middleware(
 )
 
 # ======================================================
-# NLP
+# NLP (use en_core_web_md if available)
 # ======================================================
 nlp = spacy.load("en_core_web_sm")
 
@@ -48,7 +48,7 @@ def extract_cause_effect(sentence: str):
 
     root = next((t for t in doc if t.dep_ == "ROOT"), None)
 
-    # Cause
+    # -------- Cause (subject) --------
     if root:
         for c in root.children:
             if c.dep_ in ("nsubj", "nsubjpass"):
@@ -58,7 +58,7 @@ def extract_cause_effect(sentence: str):
     if cause is None and root:
         cause = " ".join(t.text for t in doc if t.i < root.i).strip()
 
-    # Effect
+    # -------- Effect (object / complement) --------
     if root:
         for c in root.children:
             if c.dep_ in ("dobj", "attr", "oprd"):
@@ -74,12 +74,12 @@ def extract_cause_effect(sentence: str):
     return cause, effect
 
 
-def process_text_block(text: str) -> List[dict]:
+def process_text_block(text: str, prefix: str) -> List[dict]:
     results = []
     if not text:
         return results
 
-    for line in text.split("\n"):
+    for i, line in enumerate(text.split("\n"), start=1):
         if not line.strip():
             continue
 
@@ -100,6 +100,7 @@ def process_text_block(text: str) -> List[dict]:
         directness = "Direct" if "Direct" in impact_text else "Indirect"
 
         results.append({
+            "id": f"{prefix}{i}",             # R1 / D1 / ...
             "Influence_Factor": cause,
             "Influence_Affect": effect,
             "SDG": sdg,
@@ -111,12 +112,12 @@ def process_text_block(text: str) -> List[dict]:
     return results
 
 # ======================================================
-# SEMANTIC SIMILARITY
+# SEMANTIC SIMILARITY (FULL SENTENCE)
 # ======================================================
-def semantic_similarity(t1: str, t2: str) -> float:
-    if not t1 or not t2:
+def semantic_similarity(text1: str, text2: str) -> float:
+    if not text1 or not text2:
         return 0.0
-    d1, d2 = nlp(t1), nlp(t2)
+    d1, d2 = nlp(text1), nlp(text2)
     if not d1.vector_norm or not d2.vector_norm:
         return 0.0
     return float(d1.similarity(d2))
@@ -130,58 +131,51 @@ def similarity_label(score: float) -> str:
     return "low"
 
 
-def compare_researcher_to_database(r_items, d_items):
-    comparisons = []
+def compare_researcher_to_database(researcher_items, database_items):
+    mappings = []
 
-    for r in r_items:
-        r_text = f"{r['Influence_Factor']} {r['Influence_Affect']}"
+    for r in researcher_items:
         best_score = 0.0
-        best_match = None
+        best_d = None
 
-        for d in d_items:
-            d_text = f"{d['Influence_Factor']} {d['Influence_Affect']}"
-            score = semantic_similarity(r_text, d_text)
+        for d in database_items:
+            score = semantic_similarity(r["Evidence"], d["Evidence"])
             if score > best_score:
                 best_score = score
-                best_match = d
+                best_d = d
 
-        comparisons.append({
-            "researcher_item": r,
-            "best_database_match": best_match,
+        mappings.append({
+            "mapping_id": f"MAP_{r['id']}_{best_d['id'] if best_d else 'NONE'}",
+            "researcher_id": r["id"],
+            "database_id": best_d["id"] if best_d else None,
             "similarity_score": round(best_score, 3),
-            "alignment": similarity_label(best_score)
+            "alignment": similarity_label(best_score),
+            "researcher_sentence": r["Evidence"],
+            "database_sentence": best_d["Evidence"] if best_d else None,
+            "researcher_item": r,
+            "database_item": best_d
         })
 
-    return comparisons
+    return mappings
 
 # ======================================================
-# GRAPH BUILDER (REACT FLOW READY)
+# GRAPH BUILDER (ONE LINE = ONE PATH)
 # ======================================================
-def build_graph(similarity_results):
+def build_graph(mappings):
     nodes = []
     edges = []
-    seen = {}
-    idx = 1
 
-    def nid(label, prefix):
-        nonlocal idx
-        key = f"{prefix}:{label}"
-        if key not in seen:
-            seen[key] = f"{prefix}_{idx}"
-            idx += 1
-        return seen[key]
+    for i, m in enumerate(mappings, start=1):
+        r = m["researcher_item"]
 
-    for item in similarity_results:
-        r = item["researcher_item"]
-
-        if_id = nid(r["Influence_Factor"], "IF")
-        ia_id = nid(r["Influence_Affect"], "IA")
-        sdg_id = nid(r["SDG"], "SDG")
+        if_id = f"IF_{r['id']}"
+        ia_id = f"IA_{r['id']}"
+        sdg_id = f"SDG_{r['id']}"
 
         nodes.extend([
-            {"id": if_id, "label": r["Influence_Factor"], "type": "InfluenceFactor"},
-            {"id": ia_id, "label": r["Influence_Affect"], "type": "InfluenceAffect"},
-            {"id": sdg_id, "label": r["SDG"], "type": "SDG"}
+            {"id": if_id, "label": r["Influence_Factor"], "type": "InfluenceFactor", "line": r["id"]},
+            {"id": ia_id, "label": r["Influence_Affect"], "type": "InfluenceAffect", "line": r["id"]},
+            {"id": sdg_id, "label": r["SDG"], "type": "SDG", "line": r["id"]}
         ])
 
         is_positive = r["Polarity"] == "Positive"
@@ -191,28 +185,46 @@ def build_graph(similarity_results):
             "color": "green" if is_positive else "red",
             "line": "solid" if is_direct else "dashed",
             "strike": not is_positive,
-            "width": 3 if item["alignment"] == "high" else 2
+            "width": 3 if m["alignment"] == "high" else 2
         }
 
         edges.append({
+            "id": f"E_{r['id']}_IF_IA",
             "source": if_id,
             "target": ia_id,
             "relationship": "causes",
             "polarity": r["Polarity"],
             "directness": r["Directness"],
-            "similarity_score": item["similarity_score"],
-            "alignment": item["alignment"],
+            "similarity_score": m["similarity_score"],
+            "alignment": m["alignment"],
             "style": style
         })
 
         edges.append({
+            "id": f"E_{r['id']}_IA_SDG",
             "source": ia_id,
             "target": sdg_id,
             "relationship": "impacts"
         })
 
+        if m["database_item"]:
+            edges.append({
+                "id": m["mapping_id"],
+                "source": if_id,
+                "target": f"IF_{m['database_id']}",
+                "relationship": "maps_to",
+                "similarity_score": m["similarity_score"],
+                "alignment": m["alignment"],
+                "style": {
+                    "color": "#2563eb",
+                    "line": "dashed",
+                    "strike": False,
+                    "width": 2
+                }
+            })
+
     return {
-        "nodes": list({n["id"]: n for n in nodes}.values()),
+        "nodes": nodes,
         "edges": edges
     }
 
@@ -221,20 +233,20 @@ def build_graph(similarity_results):
 # ======================================================
 @app.post("/extract-dual")
 def extract_dual(data: DualTextInput):
-    researcher_results = process_text_block(data.researcher_analysis)
-    database_results = process_text_block(data.database_reference)
+    researcher_results = process_text_block(data.researcher_analysis, "R")
+    database_results = process_text_block(data.database_reference, "D")
 
-    similarity_results = compare_researcher_to_database(
+    mappings = compare_researcher_to_database(
         researcher_results,
         database_results
     )
 
-    graph = build_graph(similarity_results)
+    graph = build_graph(mappings)
 
     return {
         "researcher_analysis_result": researcher_results,
         "database_analysis_result": database_results,
-        "semantic_alignment": similarity_results,
+        "mappings": mappings,
         "graph": graph
     }
 
