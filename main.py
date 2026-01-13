@@ -99,7 +99,15 @@ def process_text_block(text: str, prefix: str) -> List[dict]:
         )
 
         # Case-insensitive directness detection
-        directness = "Direct" if "direct" in impact_text.lower() else "Indirect"
+        impact_lower = impact_text.lower()
+
+        if "indirect" in impact_lower:
+            directness = "Indirect"
+        elif "direct" in impact_lower:
+            directness = "Direct"
+        else:
+            directness = None
+
 
         results.append({
             "id": f"{prefix}{i}",
