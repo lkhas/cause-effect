@@ -90,19 +90,21 @@ def process_text_block(text: str, prefix: str) -> List[dict]:
 
         sentence, sdg, impact_text = parts[:3]
         cause, effect = extract_cause_effect(sentence)
-        
+
+        # Case-insensitive polarity detection
         polarity = (
             "positive" if "positive" in impact_text.lower()
             else "negative" if "negative" in impact_text.lower()
             else "More info needed"
         )
-        
-        directness = "Direct" if "Direct" in impact_text else "Indirect"
+
+        # Case-insensitive directness detection
+        directness = "Direct" if "direct" in impact_text.lower() else "Indirect"
 
         results.append({
-            "id": f"{prefix}{i}",             # R1 / D1 / ...
-            "Influence_Factor": cause,
-            "Influence_Affect": effect,
+            "id": f"{prefix}{i}",
+            "Influence_Factor": cause or "",
+            "Influence_Affect": effect or "",
             "SDG": sdg,
             "Polarity": polarity,
             "Directness": directness,
@@ -112,9 +114,10 @@ def process_text_block(text: str, prefix: str) -> List[dict]:
     return results
 
 # ======================================================
-# SEMANTIC SIMILARITY (FULL SENTENCE)
+# ROBUST SEMANTIC SIMILARITY
 # ======================================================
 def semantic_similarity(text1: str, text2: str) -> float:
+    """Calculate semantic similarity between two texts."""
     if not text1 or not text2:
         return 0.0
     d1, d2 = nlp(text1), nlp(text2)
@@ -123,38 +126,159 @@ def semantic_similarity(text1: str, text2: str) -> float:
     return float(d1.similarity(d2))
 
 
+def calculate_component_similarity(r_item: dict, d_item: dict) -> dict:
+    """
+    Calculate similarity across multiple components:
+    - Influence Factor similarity
+    - Influence Affect similarity
+    - Full sentence similarity
+    - SDG match
+    - Polarity match
+    - Directness match
+    """
+    scores = {}
+    
+    # Component similarities (0-1 range)
+    scores['influence_factor_sim'] = semantic_similarity(
+        r_item.get("Influence_Factor", ""),
+        d_item.get("Influence_Factor", "")
+    )
+    
+    scores['influence_affect_sim'] = semantic_similarity(
+        r_item.get("Influence_Affect", ""),
+        d_item.get("Influence_Affect", "")
+    )
+    
+    scores['sentence_sim'] = semantic_similarity(
+        r_item.get("Evidence", ""),
+        d_item.get("Evidence", "")
+    )
+    
+    # Exact matches (binary: 1 or 0)
+    scores['sdg_match'] = 1.0 if r_item.get("SDG") == d_item.get("SDG") else 0.0
+    
+    scores['polarity_match'] = 1.0 if (
+        r_item.get("Polarity", "").lower() == d_item.get("Polarity", "").lower()
+    ) else 0.0
+    
+    scores['directness_match'] = 1.0 if (
+        r_item.get("Directness", "").lower() == d_item.get("Directness", "").lower()
+    ) else 0.0
+    
+    return scores
+
+
+def calculate_composite_score(scores: dict, weights: dict = None) -> float:
+    """
+    Calculate weighted composite similarity score.
+    
+    Default weights prioritize causal components over metadata:
+    - Influence Factor: 30%
+    - Influence Affect: 30%
+    - Sentence: 20%
+    - SDG: 10%
+    - Polarity: 5%
+    - Directness: 5%
+    """
+    if weights is None:
+        weights = {
+            'influence_factor_sim': 0.30,
+            'influence_affect_sim': 0.30,
+            'sentence_sim': 0.20,
+            'sdg_match': 0.10,
+            'polarity_match': 0.05,
+            'directness_match': 0.05
+        }
+    
+    composite = sum(scores[key] * weights[key] for key in weights.keys())
+    return composite
+
+
 def similarity_label(score: float) -> str:
-    if score >= 0.75:
+    """Categorize similarity score into alignment levels."""
+    if score >= 0.70:
         return "high"
-    if score >= 0.50:
+    if score >= 0.45:
         return "medium"
-    return "low"
+    if score >= 0.25:
+        return "low"
+    return "very_low"
 
 
-def compare_researcher_to_database(researcher_items, database_items):
+def compare_researcher_to_database(researcher_items, database_items, threshold: float = 0.25):
+    """
+    Enhanced mapping with multi-component similarity.
+    
+    Args:
+        researcher_items: List of researcher analysis items
+        database_items: List of database reference items
+        threshold: Minimum composite score to consider a match (default: 0.25)
+    
+    Returns:
+        List of mappings with detailed similarity breakdown
+    """
     mappings = []
 
     for r in researcher_items:
         best_score = 0.0
         best_d = None
+        best_scores_breakdown = None
+        
+        # Find all matches above threshold
+        all_matches = []
 
         for d in database_items:
-            score = semantic_similarity(r["Evidence"], d["Evidence"])
-            if score > best_score:
-                best_score = score
+            # Calculate component similarities
+            component_scores = calculate_component_similarity(r, d)
+            
+            # Calculate composite score
+            composite_score = calculate_composite_score(component_scores)
+            
+            if composite_score >= threshold:
+                all_matches.append({
+                    'database_item': d,
+                    'composite_score': composite_score,
+                    'component_scores': component_scores
+                })
+            
+            # Track best match
+            if composite_score > best_score:
+                best_score = composite_score
                 best_d = d
+                best_scores_breakdown = component_scores
 
-        mappings.append({
+        # Sort matches by composite score
+        all_matches.sort(key=lambda x: x['composite_score'], reverse=True)
+
+        mapping = {
             "mapping_id": f"MAP_{r['id']}_{best_d['id'] if best_d else 'NONE'}",
             "researcher_id": r["id"],
             "database_id": best_d["id"] if best_d else None,
-            "similarity_score": round(best_score, 3),
+            "composite_score": round(best_score, 3),
             "alignment": similarity_label(best_score),
             "researcher_sentence": r["Evidence"],
             "database_sentence": best_d["Evidence"] if best_d else None,
             "researcher_item": r,
-            "database_item": best_d
-        })
+            "database_item": best_d,
+            "similarity_breakdown": {
+                "influence_factor": round(best_scores_breakdown.get('influence_factor_sim', 0), 3) if best_scores_breakdown else 0,
+                "influence_affect": round(best_scores_breakdown.get('influence_affect_sim', 0), 3) if best_scores_breakdown else 0,
+                "sentence": round(best_scores_breakdown.get('sentence_sim', 0), 3) if best_scores_breakdown else 0,
+                "sdg_match": bool(best_scores_breakdown.get('sdg_match', 0)) if best_scores_breakdown else False,
+                "polarity_match": bool(best_scores_breakdown.get('polarity_match', 0)) if best_scores_breakdown else False,
+                "directness_match": bool(best_scores_breakdown.get('directness_match', 0)) if best_scores_breakdown else False
+            },
+            "alternative_matches": [
+                {
+                    "database_id": m['database_item']['id'],
+                    "composite_score": round(m['composite_score'], 3),
+                    "alignment": similarity_label(m['composite_score'])
+                }
+                for m in all_matches[1:4]  # Include top 3 alternatives
+            ] if len(all_matches) > 1 else []
+        }
+        
+        mappings.append(mapping)
 
     return mappings
 
@@ -178,8 +302,9 @@ def build_graph(mappings):
             {"id": sdg_id, "label": r["SDG"], "type": "SDG", "line": r["id"]}
         ])
 
-        is_positive = r["Polarity"] == "Positive"
-        is_direct = r["Directness"] == "Direct"
+        # Case-insensitive comparison
+        is_positive = r["Polarity"].lower() == "positive"
+        is_direct = r["Directness"].lower() == "direct"
 
         style = {
             "color": "green" if is_positive else "red",
@@ -195,7 +320,7 @@ def build_graph(mappings):
             "relationship": "causes",
             "polarity": r["Polarity"],
             "directness": r["Directness"],
-            "similarity_score": m["similarity_score"],
+            "composite_score": m["composite_score"],
             "alignment": m["alignment"],
             "style": style
         })
@@ -208,18 +333,22 @@ def build_graph(mappings):
         })
 
         if m["database_item"]:
+            # Adjust mapping edge width based on composite score
+            mapping_width = 3 if m["composite_score"] >= 0.70 else 2 if m["composite_score"] >= 0.45 else 1
+            
             edges.append({
                 "id": m["mapping_id"],
                 "source": if_id,
                 "target": f"IF_{m['database_id']}",
                 "relationship": "maps_to",
-                "similarity_score": m["similarity_score"],
+                "composite_score": m["composite_score"],
                 "alignment": m["alignment"],
+                "similarity_breakdown": m["similarity_breakdown"],
                 "style": {
                     "color": "#2563eb",
                     "line": "dashed",
                     "strike": False,
-                    "width": 2
+                    "width": mapping_width
                 }
             })
 
@@ -229,12 +358,32 @@ def build_graph(mappings):
     }
 
 # ======================================================
+# SDG SORTING UTILITY
+# ======================================================
+def extract_sdg_number(sdg_string: str) -> int:
+    """Extract numeric value from SDG string (e.g., 'SDG 3' -> 3)"""
+    if not sdg_string:
+        return 999  # Put items without SDG at the end
+    
+    # Extract first number found in the string
+    match = re.search(r'\d+', str(sdg_string))
+    return int(match.group()) if match else 999
+
+def sort_by_sdg(items: List[dict]) -> List[dict]:
+    """Sort items by SDG number"""
+    return sorted(items, key=lambda x: extract_sdg_number(x.get("SDG", "")))
+
+# ======================================================
 # ENDPOINT
 # ======================================================
 @app.post("/extract-dual")
 def extract_dual(data: DualTextInput):
     researcher_results = process_text_block(data.researcher_analysis, "R")
     database_results = process_text_block(data.database_reference, "D")
+    
+    # Sort both results by SDG number
+    researcher_results = sort_by_sdg(researcher_results)
+    database_results = sort_by_sdg(database_results)
 
     mappings = compare_researcher_to_database(
         researcher_results,
@@ -247,7 +396,15 @@ def extract_dual(data: DualTextInput):
         "researcher_analysis_result": researcher_results,
         "database_analysis_result": database_results,
         "mappings": mappings,
-        "graph": graph
+        "graph": graph,
+        "statistics": {
+            "total_researcher_items": len(researcher_results),
+            "total_database_items": len(database_results),
+            "high_confidence_matches": sum(1 for m in mappings if m["alignment"] == "high"),
+            "medium_confidence_matches": sum(1 for m in mappings if m["alignment"] == "medium"),
+            "low_confidence_matches": sum(1 for m in mappings if m["alignment"] == "low"),
+            "no_matches": sum(1 for m in mappings if m["database_item"] is None)
+        }
     }
 
 # ======================================================
