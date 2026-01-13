@@ -4,10 +4,10 @@ from pydantic import BaseModel
 import spacy
 import re
 
-# ---------- APP ----------
-app = FastAPI()
+# -------------------- APP --------------------
+app = FastAPI(title="Dual Cause–Effect Extraction API")
 
-# ---------- CORS (MUST BE HERE) ----------
+# -------------------- CORS --------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"https://.*\.run\.app",
@@ -15,38 +15,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- NLP ----------
+# -------------------- NLP --------------------
 nlp = spacy.load("en_core_web_sm")
 
-class TextInput(BaseModel):
-    text: str
+# -------------------- INPUT MODEL --------------------
+class DualTextInput(BaseModel):
+    researcher_analysis: str
+    database_reference: str
 
-# ---------- UTILS ----------
-def clean_line(line):
+# -------------------- UTILS --------------------
+def clean_line(line: str) -> str:
     line = line.replace('"', '').strip()
     line = re.sub(r"^\s*\d+\.\s*", "", line)
     return line
 
-def extract_cause_effect(sentence):
+
+def extract_cause_effect(sentence: str):
     doc = nlp(sentence)
     cause = None
     effect = None
 
     root = next((t for t in doc if t.dep_ == "ROOT"), None)
 
+    # Cause (subject)
     if root:
-        for c in root.children:
-            if c.dep_ in ("nsubj", "nsubjpass"):
-                cause = " ".join(w.text for w in c.subtree)
+        for child in root.children:
+            if child.dep_ in ("nsubj", "nsubjpass"):
+                cause = " ".join(w.text for w in child.subtree)
                 break
 
     if cause is None and root:
         cause = " ".join(t.text for t in doc if t.i < root.i).strip()
 
+    # Effect (object / complement)
     if root:
-        for c in root.children:
-            if c.dep_ in ("dobj", "attr", "oprd"):
-                effect = " ".join(w.text for w in c.subtree)
+        for child in root.children:
+            if child.dep_ in ("dobj", "attr", "oprd"):
+                effect = " ".join(w.text for w in child.subtree)
                 break
 
     if effect is None:
@@ -57,12 +62,11 @@ def extract_cause_effect(sentence):
 
     return cause, effect
 
-# ---------- ENDPOINT ----------
-@app.post("/extract-dual")
-def extract_dual(data: TextInput):
+
+def process_text_block(text: str):
     results = []
 
-    for line in data.text.split("\n"):
+    for line in text.split("\n"):
         if not line.strip():
             continue
 
@@ -91,9 +95,20 @@ def extract_dual(data: TextInput):
             "Evidence": sentence
         })
 
-    return {"results": results}
+    return results
 
-# ---------- HEALTH CHECK ----------
+# -------------------- ENDPOINT --------------------
+@app.post("/extract-dual")
+def extract_dual(data: DualTextInput):
+    researcher_results = process_text_block(data.researcher_analysis)
+    database_results = process_text_block(data.database_reference)
+
+    return {
+        "researcher_analysis_result": researcher_results,
+        "database_analysis_result": database_results
+    }
+
+# -------------------- HEALTH CHECK --------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
